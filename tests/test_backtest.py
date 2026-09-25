@@ -89,4 +89,26 @@ def test_commission_charged():
     res = run_backtest(Strategy("CSP", 0.25, 30, take_profit=None, roll_at_dte=None, hold_to_expiry=True), gbm())
     t = res.trades[0]
     if t.reason == "expired":
-        assert t.pnl == pytest.approx(t.premium * 100 - 0.65)
+        assert t.pnl == pytest.approx(t.qty * (t.premium * 100 - 0.65))
+
+
+def test_csp_keeps_trading_as_underlying_triples():
+    # Regression: fixed one-contract sizing starved CSPs of collateral once the stock rose.
+    c = gbm(n=WARMUP + 2000, mu=0.25, sigma=0.2, seed=11)
+    res = run_backtest(Strategy("CSP", 0.25, 30), c)
+    late = [t for t in res.trades if t.open_date > c.index[WARMUP + 1500]]
+    assert len(late) >= 5
+
+
+def test_cc_rebuys_after_called_away_in_rally():
+    c = gbm(n=WARMUP + 1500, mu=0.3, sigma=0.2, seed=12)
+    res = run_backtest(Strategy("CC", 0.30, 30, take_profit=None, roll_at_dte=None, hold_to_expiry=True), c)
+    assert any(t.reason == "called_away" for t in res.trades)
+    late = [t for t in res.trades if t.open_date > c.index[WARMUP + 1000]]
+    assert len(late) >= 5
+
+
+def test_position_scales_with_capital():
+    res = run_backtest(Strategy("CSP", 0.25, 30), gbm())
+    assert all(t.qty > 0 for t in res.trades)
+    assert all(t.collateral == pytest.approx(t.strike * 100 * t.qty) for t in res.trades)

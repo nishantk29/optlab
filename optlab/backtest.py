@@ -1,7 +1,12 @@
 """Daily simulation engine for covered calls (CC) and cash-secured puts (CSP), synthetic pricing.
 
 Simplifications (per plan): CSP assignment is settled as shares sold at that day's close;
-CC holds 100 shares and re-buys them at the next eligible entry after being called away.
+CC holds shares and re-buys them at the next eligible entry after being called away.
+
+Sizing: research backtests use FRACTIONAL contracts — all capital is committed (CSP: fully
+cash-secured, qty = cash / (K*100); CC: shares = cash / S, qty = shares/100) and commission scales
+with qty. Fixed one-contract sizing starved strategies of collateral as the underlying rose.
+Whole-contract sizing and per-underlying limits are enforced by the candidate builder (Plan 2).
 """
 from dataclasses import dataclass
 from typing import Iterable
@@ -29,6 +34,7 @@ class Trade:
     pnl: float
     collateral: float
     reason: str
+    qty: float = 1.0
 
 
 @dataclass
@@ -62,18 +68,19 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
     divs = dividends if dividends is not None else pd.Series(dtype=float)
     dates = close.index
 
-    cash = 100.0 * close.iloc[WARMUP]          # capital for one contract at the start
-    shares = 0
-    opt = None                                 # dict(K, expiry, premium, open_date, collateral)
+    cash = 100.0 * close.iloc[WARMUP]          # starting capital (results are reported per $1k)
+    shares = 0.0
+    opt = None                                 # dict(K, expiry, premium, open_date, collateral, qty)
     trades: list[Trade] = []
     equity = {}
 
     def close_opt(date, cost, reason, extra_loss=0.0):
         # P&L = premium - opening commission - buyback (+ closing commission if bought back) - assignment loss
         nonlocal opt
-        pnl = opt["premium"] * 100 - COMM - cost * 100 - (COMM if cost > 0 else 0.0) - extra_loss
+        q = opt["qty"]
+        pnl = q * (opt["premium"] * 100 - COMM - cost * 100 - (COMM if cost > 0 else 0.0)) - extra_loss
         trades.append(Trade(opt["open_date"], date, kind, opt["K"], opt["premium"], cost, pnl,
-                            opt["collateral"], reason))
+                            opt["collateral"], reason, q))
         opt = None
 
     for i in range(WARMUP, len(dates)):
@@ -82,17 +89,17 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
             sigma = 0.2
 
         if opt is not None:
-            K = opt["K"]
+            K, q = opt["K"], opt["qty"]
             days_left = (opt["expiry"] - date).days
             if days_left <= 0:
                 if kind == "put" and S < K:
-                    loss = (K - S) * 100
+                    loss = (K - S) * 100 * q
                     cash -= loss
                     close_opt(date, 0.0, "assigned", extra_loss=loss)
                 elif kind == "call" and S > K:
-                    cash += K * 100
-                    shares = 0
-                    close_opt(date, 0.0, "called_away", extra_loss=(S - K) * 100)
+                    cash += K * 100 * q
+                    shares = 0.0
+                    close_opt(date, 0.0, "called_away", extra_loss=(S - K) * 100 * q)
                 else:
                     close_opt(date, 0.0, "expired")
             else:
@@ -101,9 +108,9 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
                 div_next = float(divs.get(nxt, 0.0)) if nxt is not None else 0.0
                 theo = bs_price(S, K, T, r, sigma, kind)
                 if kind == "call" and div_next > 0 and S > K and theo - (S - K) < div_next:
-                    cash += K * 100
-                    shares = 0
-                    close_opt(date, 0.0, "early_assigned", extra_loss=(S - K) * 100)
+                    cash += K * 100 * q
+                    shares = 0.0
+                    close_opt(date, 0.0, "early_assigned", extra_loss=(S - K) * 100 * q)
                 else:
                     bid, ask = synthetic_quote(theo)
                     buy = fill_price(bid, ask, "buy")
@@ -116,14 +123,14 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
                             and any(e <= opt["expiry"] for e in earnings if e > date):
                         reason = "earnings"
                     if reason:
-                        cash -= buy * 100 + COMM
+                        cash -= q * (buy * 100 + COMM)
                         close_opt(date, buy, reason)
 
         if opt is None and i < len(dates) - 1:
-            if kind == "call" and shares == 0 and cash >= S * 100:
-                cash -= S * 100
-                shares = 100
-            can_enter = (kind == "put" or shares == 100)
+            if kind == "call" and shares == 0 and cash > 0:
+                shares = cash / S
+                cash = 0.0
+            can_enter = (kind == "put" and cash > 0) or (kind == "call" and shares > 0)
             if can_enter and float(np.nan_to_num(ivr.iloc[i], nan=0.0)) < strategy.ivr_min:
                 can_enter = False
             if can_enter and strategy.type == "CSP" and strategy.trend_filter and not S > sma200.iloc[i]:
@@ -136,16 +143,17 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
                 K = strike_for_delta(S, T, r, sigma, kind, strategy.delta_target)
                 bid, ask = synthetic_quote(bs_price(S, K, T, r, sigma, kind))
                 prem = fill_price(bid, ask, "sell")
-                collateral = K * 100 if kind == "put" else S * 100
-                if prem >= MIN_PREMIUM and (kind == "call" or cash >= K * 100):
-                    cash += prem * 100 - COMM
+                q = cash / (K * 100) if kind == "put" else shares / 100
+                collateral = K * 100 * q if kind == "put" else S * 100 * q
+                if prem >= MIN_PREMIUM and q > 0:
+                    cash += q * (prem * 100 - COMM)
                     opt = dict(K=K, expiry=date + pd.Timedelta(days=strategy.dte), premium=prem,
-                               open_date=date, collateral=collateral)
+                               open_date=date, collateral=collateral, qty=q)
 
         liability = 0.0
         if opt is not None:
             T = max((opt["expiry"] - date).days, 0) / 365
-            liability = bs_price(S, opt["K"], T, r, sigma, kind) * 100
+            liability = bs_price(S, opt["K"], T, r, sigma, kind) * 100 * opt["qty"]
         equity[date] = cash + shares * S - liability
 
     return BacktestResult(trades, pd.Series(equity, dtype=float))
