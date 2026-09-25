@@ -64,11 +64,39 @@ def test_cc_early_assignment_before_dividend():
     assert res.trades[0].reason == "early_assigned"
 
 
-def test_earnings_close_and_skip():
+def test_earnings_blocks_entries_spanning_earnings():
     c = gbm()
     earn = [c.index[WARMUP + 12]]
     res = run_backtest(Strategy("CSP", 0.25, 30, take_profit=None, roll_at_dte=None), c, earnings=earn)
-    assert res.trades[0].reason == "earnings"
+    assert res.trades[0].open_date >= earn[0]
+    assert all(not (t.open_date < earn[0] <= t.close_date) for t in res.trades)
+
+
+def test_earnings_ignored_when_flag_off():
+    c = gbm()
+    earn = [c.index[WARMUP + 12]]
+    res = run_backtest(Strategy("CSP", 0.25, 30, take_profit=None, roll_at_dte=None,
+                                close_before_earnings=False), c, earnings=earn)
+    assert res.trades[0].open_date == c.index[WARMUP]
+
+
+def test_cc_dividends_are_paid_to_shareholders():
+    c = gbm(sigma=0.1, mu=0.0, seed=21)
+    ex = c.index[WARMUP + 5]
+    s = Strategy("CC", 0.15, 45, take_profit=None, roll_at_dte=None, hold_to_expiry=True)
+    without = run_backtest(s, c)
+    with_div = run_backtest(s, c, dividends=pd.Series({ex: 1.0}))
+    assert with_div.trades[0].reason != "early_assigned"
+    assert with_div.equity[ex] - without.equity[ex] == pytest.approx(100.0)   # 100 shares x $1
+
+
+def test_expiry_settles_on_or_before_nominal_date():
+    s = Strategy("CSP", 0.25, 30, take_profit=None, roll_at_dte=None, hold_to_expiry=True)
+    res = run_backtest(s, gbm(n=WARMUP + 800))
+    settled = [t for t in res.trades if t.reason in ("expired", "assigned")]
+    assert settled
+    assert all(t.close_date <= t.open_date + pd.Timedelta(days=30) for t in settled)
+    assert all(t.close_date.weekday() < 5 for t in settled)
 
 
 def test_trend_filter_blocks_csp_in_downtrend():

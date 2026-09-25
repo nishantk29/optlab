@@ -39,6 +39,14 @@ def test_retire_after_8_benched_weeks():
 
 
 def test_band():
-    b = band_from_trade_returns(list(range(101)), 0.2)
+    b = band_from_trade_returns(list(range(101)), 0.2, window=1)
     assert (b.p10, b.p90, b.mdd) == (10.0, 90.0, 0.2)
+
+
+def test_band_uses_rolling_averages_so_it_is_narrower():
+    import numpy as np
+    rets = list(np.random.default_rng(0).normal(5, 40, 300))
+    single = band_from_trade_returns(rets, 0.2, window=1)
+    avg10 = band_from_trade_returns(rets, 0.2)
+    assert avg10.p90 - avg10.p10 < (single.p90 - single.p10) / 2
     assert set(STATUSES) == {"candidate", "backtest_pass", "paper", "promoted", "benched", "retired"}

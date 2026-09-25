@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
-from optlab.walkforward import split_windows, gate, WalkForwardReport, evaluate, report_to_dict
+import math
+from optlab.walkforward import split_windows, gate, WalkForwardReport, evaluate, report_to_dict, buy_and_hold
 from optlab.strategy import Strategy
 from tests.test_backtest import gbm
 
@@ -40,3 +41,15 @@ def test_evaluate_end_to_end():
     assert len(r.window_returns) == 4 and r.n_trades > 0
     d = report_to_dict(r)
     assert set(d) >= {"window_returns", "sortino", "bh_sortino", "n_trades"}
+
+
+def test_window_returns_chain_to_total_return():
+    r = evaluate(Strategy("CSP", 0.25, 30), gbm(n=252 + 1000))
+    assert math.prod(1 + w for w in r.window_returns) - 1 == pytest.approx(r.total_return, rel=1e-9)
+
+
+def test_buy_and_hold_includes_dividends():
+    idx = pd.bdate_range("2020-01-01", periods=4)
+    close = pd.Series([100.0, 100.0, 99.0, 99.0], index=idx)
+    bh = buy_and_hold(close, pd.Series({idx[2]: 1.0}))
+    assert list(bh) == [100.0, 100.0, 100.0, 100.0]

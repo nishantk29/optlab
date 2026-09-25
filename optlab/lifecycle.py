@@ -45,6 +45,10 @@ def review(status: str, s: PaperStats, band: BacktestBand, benched_weeks: int = 
     return status
 
 
-def band_from_trade_returns(trade_returns_per_1k, mdd: float) -> BacktestBand:
+def band_from_trade_returns(trade_returns_per_1k, mdd: float, window: int = 10) -> BacktestBand:
+    """p10/p90 of rolling `window`-trade average returns — comparable to a paper period's
+    average per-trade return (single-trade percentiles are far too wide for that)."""
     arr = np.asarray(trade_returns_per_1k, dtype=float)
+    if window > 1 and len(arr) >= window:
+        arr = np.convolve(arr, np.ones(window) / window, mode="valid")
     return BacktestBand(float(np.percentile(arr, 10)), float(np.percentile(arr, 90)), float(mdd))

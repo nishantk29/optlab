@@ -58,6 +58,12 @@ def _earnings_within(date, horizon_days, earnings) -> bool:
     return any(date < e <= end for e in earnings)
 
 
+def _expiry_on_or_before(dates: pd.DatetimeIndex, nominal: pd.Timestamp) -> pd.Timestamp:
+    """Last trading day on or before the nominal expiry (settlement never uses later prices)."""
+    j = dates.searchsorted(nominal, side="right") - 1
+    return dates[j] if nominal <= dates[-1] else nominal
+
+
 def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | None = None,
                  earnings: Iterable = (), r: float = 0.04) -> BacktestResult:
     close = close.astype(float)
@@ -87,6 +93,8 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
         date, S, sigma = dates[i], float(close.iloc[i]), float(vol.iloc[i])
         if not math.isfinite(sigma) or sigma <= 0:
             sigma = 0.2
+        if shares > 0:
+            cash += shares * float(divs.get(date, 0.0))   # holders of record receive the dividend
 
         if opt is not None:
             K, q = opt["K"], opt["qty"]
@@ -135,11 +143,11 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
                 can_enter = False
             if can_enter and strategy.type == "CSP" and strategy.trend_filter and not S > sma200.iloc[i]:
                 can_enter = False
-            if can_enter and strategy.close_before_earnings and _earnings_within(date, strategy.dte, earnings) \
-                    and _earnings_within(date, EARNINGS_BUFFER_DAYS, earnings):
-                can_enter = False
+            expiry = _expiry_on_or_before(dates, date + pd.Timedelta(days=strategy.dte))
+            if can_enter and strategy.close_before_earnings and _earnings_within(date, (expiry - date).days, earnings):
+                can_enter = False                      # don't sell premium through an earnings release
             if can_enter:
-                T = strategy.dte / 365
+                T = (expiry - date).days / 365
                 K = strike_for_delta(S, T, r, sigma, kind, strategy.delta_target)
                 bid, ask = synthetic_quote(bs_price(S, K, T, r, sigma, kind))
                 prem = fill_price(bid, ask, "sell")
@@ -147,7 +155,7 @@ def run_backtest(strategy: Strategy, close: pd.Series, dividends: pd.Series | No
                 collateral = K * 100 * q if kind == "put" else S * 100 * q
                 if prem >= MIN_PREMIUM and q > 0:
                     cash += q * (prem * 100 - COMM)
-                    opt = dict(K=K, expiry=date + pd.Timedelta(days=strategy.dte), premium=prem,
+                    opt = dict(K=K, expiry=expiry, premium=prem,
                                open_date=date, collateral=collateral, qty=q)
 
         liability = 0.0

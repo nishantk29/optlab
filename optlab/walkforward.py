@@ -31,14 +31,24 @@ def split_windows(index: pd.DatetimeIndex, n: int = 4):
     return [(index[p[0]], index[p[-1]]) for p in parts]
 
 
+def buy_and_hold(close: pd.Series, dividends: pd.Series | None = None) -> pd.Series:
+    """Price plus cumulative cash dividends per share (total return, dividends not reinvested)."""
+    close = close.astype(float)
+    if dividends is None or dividends.empty:
+        return close
+    paid = dividends.reindex(close.index, fill_value=0.0).astype(float).cumsum()
+    return close + paid
+
+
 def evaluate(strategy, close, dividends=None, earnings=(), r=0.04) -> WalkForwardReport:
     res = run_backtest(strategy, close, dividends, earnings, r)
     eq = res.equity
-    bh = close.loc[eq.index].astype(float)
-    wins = []
+    bh = buy_and_hold(close, dividends).loc[eq.index]
+    wins, prev_end = [], None
     for a, b in split_windows(eq.index, 4):
-        seg = eq.loc[a:b]
+        seg = eq.loc[(prev_end if prev_end is not None else a):b]   # chain windows: no skipped days
         wins.append(float(seg.iloc[-1] / seg.iloc[0] - 1))
+        prev_end = b
     return WalkForwardReport(
         window_returns=wins,
         sortino=metrics.sortino(eq), bh_sortino=metrics.sortino(bh),

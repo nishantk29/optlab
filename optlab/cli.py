@@ -5,6 +5,7 @@ import json
 import os
 
 from . import data, seed, store
+from .backtest import WARMUP
 from .lifecycle import after_backtest
 from .walkforward import evaluate, gate, report_to_dict
 
@@ -14,7 +15,19 @@ def lab_run(db: str, symbols: list[str], out: str, loader=data.load_history) -> 
     con = store.connect(db)
     for s in seed.standard_variants():
         store.upsert_strategy(con, s)
-    hist = {sym: loader(sym) for sym in symbols}
+    hist, failed = {}, []
+    for sym in symbols:
+        try:
+            close, divs, earn = loader(sym)
+            if close is None or len(close) <= WARMUP + 1:
+                raise ValueError(f"only {0 if close is None else len(close)} rows")
+            hist[sym] = (close, divs, earn)
+        except Exception as e:                       # one bad symbol must not sink the run
+            failed.append(sym)
+            print(f"skipping {sym}: {e}")
+    if not hist:
+        store.log_run(con, "lab", False, f"all symbols failed: {failed}", started, dt.datetime.now())
+        return {"evaluated": 0, "symbols": symbols, "failed_symbols": failed, "strategies": []}
     evaluated, rows = 0, []
     for strat, status in store.get_strategies(con, ("candidate",)):
         passes, per_symbol = 0, {}
@@ -35,13 +48,13 @@ def lab_run(db: str, symbols: list[str], out: str, loader=data.load_history) -> 
                                                   / max(len(per_symbol), 1), 2)})
     all_rows = rows or [{"id": s.id, "spec": s.to_dict(), "status": st, "symbols": {}, "per_1k_total_return": None}
                         for s, st in store.get_strategies(con)]
-    result = {"evaluated": evaluated, "symbols": symbols,
+    result = {"evaluated": evaluated, "symbols": symbols, "failed_symbols": failed,
               "strategies": sorted(all_rows, key=lambda r: (r["per_1k_total_return"] is None,
                                                             -(r["per_1k_total_return"] or 0), r["id"]))}
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w") as f:
         json.dump(result, f, indent=2, default=str)
-    store.log_run(con, "lab", True, f"evaluated={evaluated}", started, dt.datetime.now())
+    store.log_run(con, "lab", True, f"evaluated={evaluated} failed_symbols={failed}", started, dt.datetime.now())
     return result
 
 
