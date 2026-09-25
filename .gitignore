@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.duckdb
+.cache/
+out/
+data/
+uv.lock
