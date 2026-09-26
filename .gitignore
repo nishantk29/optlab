@@ -5,3 +5,8 @@ __pycache__/
 out/
 data/
 uv.lock
+
+# secrets — never commit
+.env
+*.env
+config.env
