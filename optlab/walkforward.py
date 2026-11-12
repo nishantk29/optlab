@@ -2,7 +2,7 @@
 
 A variant is a fixed parameter record, so it is simulated once over the full history and its
 equity/trades are sliced into n sequential out-of-sample windows. "In-sample fitting" is the
-selection among variants done by the weekly proposal loop (Plan 2).
+selection among variants done by a separate proposal step (not in this repo).
 """
 from dataclasses import dataclass, asdict
 import numpy as np

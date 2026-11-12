@@ -1,4 +1,4 @@
-"""Standard starting variants (22). Hermes proposals (Plan 2) add more by changing values only."""
+"""Standard starting variants (22). Later proposals add more by changing values only."""
 from .strategy import Strategy
 
 TP_ROLL = dict(take_profit=0.5, roll_at_dte=21, hold_to_expiry=False)
