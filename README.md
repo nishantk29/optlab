@@ -1,28 +1,73 @@
 # optlab
 
-A research lab for two income options strategies: covered calls (CC) and cash-secured puts (CSP). It backtests each strategy variant on daily price history with Black-Scholes pricing and a conservative fill model, scores it with walk-forward windows, and only advances variants that beat buy-and-hold on a risk-adjusted basis.
+A backtesting lab for two income options strategies, covered calls and cash-secured puts. It tests each variant on 10 years of daily prices and promotes only the ones that beat buy-and-hold on a risk-adjusted basis.
+
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat&logo=python&logoColor=white)
+![tests: 70 passing](https://img.shields.io/badge/tests-70%20passing-2ea44f?style=flat)
+![DuckDB](https://img.shields.io/badge/storage-DuckDB-FFF000?style=flat&logo=duckdb&logoColor=black)
+![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?style=flat)
+![research only](https://img.shields.io/badge/research%20only-no%20broker%20connection-6b7280?style=flat)
+
+<p align="center">
+  <img src="docs/hero-chart.png" width="900" alt="SPY equity per $1,000 over ten years: buy and hold, a covered-call variant and a cash-secured-put variant, with the four walk-forward windows shaded">
+</p>
+
+The chart shows SPY, with equity per $1,000. A 0.30-delta covered call tracks buy-and-hold but gives up the upside on strong rallies. A trend-filtered 0.20-delta put stays flat. Neither beats buy-and-hold here, so the walk-forward gate would not advance them. To regenerate the chart, run `uv run --with matplotlib python docs/make_hero_chart.py`.
 
 It is research only. Nothing in this repo connects to a broker or places trades.
 
-## How it works
-- **Strategies are data, not code.** Each variant is a parameter record (`optlab/strategy.py`): delta or moneyness target, days to expiry, take-profit, roll timing. `optlab/seed.py` defines 22 starting variants.
-- **Daily simulation** (`optlab/backtest.py`): sells the option, marks it to market every day, handles take-profit, rolls, assignment and call-away. Contracts are fractional, so every variant uses all of its capital and commissions scale with size.
-- **Pricing and fills:** Black-Scholes with a continuous dividend yield (`optlab/pricing.py`). Sellers get mid minus 25% of the spread, buyers pay mid plus 25%, plus $0.65 per contract (`optlab/fills.py`).
-- **Walk-forward gate** (`optlab/walkforward.py`): each run is split into 4 out-of-sample windows. A variant passes only if it is profitable in at least 3 of the 4 windows, its Sortino ratio beats buy-and-hold, its max drawdown is no worse than 1.25x the underlying's, and it made at least 30 trades.
-- **Lifecycle** (`optlab/lifecycle.py`): candidate → backtest_pass → paper → promoted, with benched and retired states.
-- **Storage:** DuckDB (`optlab/store.py`) keeps strategies, backtest results and run logs. Price history comes from yfinance with a one-day local cache (`optlab/data.py`).
+## Features
+- **Strategies are data, not code.** Each variant is a validated parameter record: delta target, days to expiry, take-profit, roll timing, volatility-rank floor, trend filter. There are 22 seed variants.
+- **Daily simulation.** It sells the option, marks it to market every day, and handles take-profit, rolls, assignment, call-away and closing before earnings.
+- **Conservative pricing and fills.** Black-Scholes with a continuous dividend yield. Sellers get mid minus 25% of the spread, buyers pay mid plus 25%, plus $0.65 per contract.
+- **Walk-forward gate.** Each run is split into 4 out-of-sample windows. A variant passes only if it meets all of these:
+  - profitable in at least 3 of the 4 windows
+  - Sortino ratio better than buy-and-hold
+  - max drawdown no worse than 1.25x the underlying's
+  - at least 30 trades
+- **Lifecycle.** Variants move from candidate to backtest_pass, then paper, then promoted, with benched and retired states.
+- **Reproducible runs.** Every backtest result and run log is stored in DuckDB. The command line writes a ranked JSON report.
 
 ## Stack
-Python 3.11+, NumPy, pandas, SciPy, DuckDB, yfinance, pytest. Managed with [uv](https://docs.astral.sh/uv/).
+- Python 3.11+, NumPy, pandas, SciPy
+- DuckDB for results and run logs
+- yfinance for price history, with a one-day local cache
+- pytest, with [uv](https://docs.astral.sh/uv/) for environments
 
-## Run
+## Run locally
 ```bash
 uv run python -m optlab.cli lab-run --symbols SPY,QQQ,AAPL,MSFT --db data/options.duckdb --out out/optlab_lab.json
 ```
-This evaluates every candidate variant on each symbol, records the results in DuckDB, and writes a ranked JSON report. `data/` and `out/` are git-ignored.
+This evaluates every candidate variant on each symbol, records the results in DuckDB and writes a ranked JSON report. A symbol that fails to download is skipped and listed. `data/` and `out/` are git-ignored.
 
 ## Tests
 ```bash
 uv run --extra dev pytest -q   # 70 tests
 ```
-The tests cover pricing against known values, fills, the backtest engine (with golden results), metrics, walk-forward windows and the gate, the lifecycle, and the store.
+The tests cover:
+- pricing against known values
+- the fill model
+- the backtest engine, with golden results
+- metrics
+- walk-forward windows and the gate
+- the lifecycle
+- the store
+
+## Project structure
+```
+optlab/
+  strategy.py     Strategy record and its validation
+  seed.py         the 22 seed variants
+  data.py         price, dividend and earnings history (yfinance, cached)
+  pricing.py      Black-Scholes with dividend yield, delta-to-strike
+  fills.py        spread-aware fill model and commissions
+  backtest.py     daily simulation: open, mark, take profit, roll, assign
+  metrics.py      returns, Sortino, drawdown, win rate
+  walkforward.py  4-window evaluation, buy-and-hold baseline, the gate
+  lifecycle.py    candidate -> backtest_pass -> paper -> promoted
+  store.py        DuckDB tables for strategies, results and runs
+  cli.py          `lab-run` entry point
+tests/            one test module per component, plus golden backtests
+docs/             README chart and the script that draws it
+```
+A run loads history for each symbol, then evaluates every candidate variant over the four windows. Each result goes through the gate and is stored. The variant's lifecycle status moves only when it passes on at least half the symbols.
