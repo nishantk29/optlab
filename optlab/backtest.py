@@ -1,12 +1,12 @@
 """Daily simulation engine for covered calls (CC) and cash-secured puts (CSP), synthetic pricing.
 
-Simplifications (per plan): CSP assignment is settled as shares sold at that day's close;
+Simplifications: CSP assignment is settled as shares sold at that day's close;
 CC holds shares and re-buys them at the next eligible entry after being called away.
 
 Sizing: research backtests use FRACTIONAL contracts — all capital is committed (CSP: fully
 cash-secured, qty = cash / (K*100); CC: shares = cash / S, qty = shares/100) and commission scales
 with qty. Fixed one-contract sizing starved strategies of collateral as the underlying rose.
-Whole-contract sizing and per-underlying limits are enforced by the candidate builder (Plan 2).
+Whole-contract sizing and per-underlying limits are left to a later candidate-builder stage (not in this repo).
 """
 from dataclasses import dataclass
 from typing import Iterable
