@@ -10,3 +10,6 @@ uv.lock
 .env
 *.env
 config.env
+
+# build artifacts
+*.egg-info/
